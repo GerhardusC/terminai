@@ -1,13 +1,17 @@
 use anyhow::Result;
-use std::{io::Read, sync::OnceLock};
+use reqwest::blocking::Response;
+use std::{io::Read, sync::OnceLock, thread};
 
 use cursive::{
     Cursive, CursiveExt,
-    view::{Nameable, Resizable, Scrollable, SizeConstraint},
-    views::{Dialog, LinearLayout, NamedView, ResizedView, ScrollView, TextArea, TextView},
+    view::{Nameable, Resizable, ScrollStrategy, Scrollable, SizeConstraint},
+    views::{
+        Button, Dialog, DummyView, LinearLayout, NamedView, ResizedView, ScrollView, TextArea,
+        TextView,
+    },
 };
 use cursive_aligned_view::Alignable;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 static API_KEY: OnceLock<String> = OnceLock::new();
 
@@ -25,25 +29,41 @@ fn get_api_key() -> String {
 fn main() {
     let mut siv = Cursive::new();
 
+    let v = TextView::empty().scrollable().with_name("asd");
+
     siv.add_layer(ResizedView::with_full_screen(
         LinearLayout::vertical()
             .child(ResizedView::new(
                 SizeConstraint::Full,
                 SizeConstraint::Free,
-                TextView::new(lorem(0xFFF))
-                    .with_name("output-area")
-                    .scrollable(),
+                TextView::empty().scrollable().with_name("output-area"),
             ))
             .child(
                 ResizedView::with_full_width(
-                    Dialog::around(ScrollView::new(
-                        TextArea::new().with_name("prompt-area").scrollable(),
-                    ))
+                    Dialog::around(
+                        TextArea::new().scrollable()
+                            .scroll_strategy(ScrollStrategy::StickToBottom).with_name("prompt-area"),
+                    )
                     .title("Prompt")
-                    .button("CLEAR", |s| {
-                        s.call_on_name("prompt-area", |v: &mut NamedView<TextArea>| {
-                            v.get_mut().set_content("");
+                    .button("CLEAR INPUT", |s| {
+                        s.call_on_name("prompt-area", |v: &mut NamedView<ScrollView<TextArea>>| {
+                            v.get_mut().get_inner_mut().set_content("");
                         });
+                    })
+                    .button("CLEAR OUTPUT", |s| {
+                        s.call_on_name("output-area", |v: &mut NamedView<ScrollView<TextView>>| {
+                            v.get_mut().get_inner_mut().set_content("");
+                        });
+                    })
+                    .button("Prompt", |s| {
+                        let prompt = s
+                            .call_on_name("prompt-area", |v: &mut NamedView<ScrollView<TextArea>>| {
+                                v.get_mut().get_inner_mut().get_content().to_owned()
+                            });
+                        if let Some(prompt) = prompt {
+                            stream_res_to_gui(s, prompt.clone());
+                            show_message(s, format!("Prompt sent: {}", &prompt));
+                        }
                     }),
                 )
                 .fixed_height(10),
@@ -55,34 +75,57 @@ fn main() {
     siv.run();
 }
 
-fn call_api() -> Result<String> {
-    let client = reqwest::blocking::Client::new();
+// E.G. data: {
+//   "candidates": [
+//     {
+//       "content": {
+//         "parts": [
+//           {
+//             "text": "Using the Gemini API is relatively straightforward. Google provides a platform called **Google AI Studio** that allows you to get an"
+//           }
+//         ],
+//         "role": "model"
+//       },
+//       "index": 0
+//     }
+//   ],
+//   "usageMetadata": {
+//     "promptTokenCount": 16,
+//     "candidatesTokenCount": 24,
+//     "totalTokenCount": 416,
+//     "promptTokensDetails": [
+//       {
+//         "modality": "TEXT",
+//         "tokenCount": 16
+//       }
+//     ],
+//     "thoughtsTokenCount": 376
+//   },
+//   "modelVersion": "gemini-3-flash-preview",
+//   "responseId": "jJusaaG3HvTzxs0P7_3ywQY"
+// }
 
-    let req_body = GapiReqBody {
-        contents: vec![GapiReqParts {
-            parts: GapiReqPart {
-                text: "Hello! Please can you explain to me how to use the gemini api.".to_owned(),
-            },
-        }],
-    };
+#[derive(Deserialize)]
+struct PartialGapiResponse {
+    data: PartialGapiResponseData,
+}
 
-    let mut res = client.post("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse")
-        .header("x-goog-api-key", get_api_key())
-        .header("Content-Type", "application/json")
-        .json(&req_body)
-        .send()?;
+#[derive(Deserialize)]
+struct PartialGapiResponseData {
+    candidates: Vec<Candidate>,
+    // TODO: Usage metadata.
+}
 
-    let mut acc = Vec::new();
-    let mut buf = [0; 0xFF];
-    while let Ok(x) = res.read(&mut buf)
-        && x > 0
-    {
-        acc.extend_from_slice(&buf[..x]);
-        println!("Bytes read: {}: {:?}", x, String::from_utf8(buf.to_vec()));
-        buf.fill(0);
-    }
+#[derive(Deserialize)]
+struct GapiContent {
+    parts: Vec<GapiPart>,
+    role: String,
+}
 
-    Ok(String::from_utf8(acc)?)
+#[derive(Deserialize)]
+struct Candidate {
+    content: GapiContent,
+    index: u32,
 }
 
 #[derive(Serialize)]
@@ -92,23 +135,72 @@ struct GapiReqBody {
 
 #[derive(Serialize)]
 struct GapiReqParts {
-    parts: GapiReqPart,
+    parts: Vec<GapiPart>,
 }
 
-#[derive(Serialize)]
-struct GapiReqPart {
+#[derive(Serialize, Deserialize)]
+struct GapiPart {
     text: String,
 }
 
-fn lorem(letters: u32) -> String {
-    let mut acc = String::new();
-    let choose = "qwerttyuioipasdfgghjklzxcvbnm             ";
-    for _ in 0..letters {
-        let n = rand::random_range(0..(choose.len() - 1));
-        acc.push(choose.chars().nth(n).expect("Indexing in range"));
-    }
+fn stream_res_to_gui(s: &mut Cursive, prompt: String) {
+    let sink = s.cb_sink().clone();
 
-    acc
+    thread::spawn(move || {
+        let res = call_api(prompt);
+
+        let Ok(mut res) = res else {
+            let _ = sink.send(Box::new(move |s| {
+                show_message(s, "Unable to send api request");
+            }));
+            return;
+        };
+        let mut buf = [0; 0xFF];
+        while let Ok(x) = res.read(&mut buf)
+            && x > 0
+        {
+            let _ = sink.send(Box::new(move |s| {
+                s.call_on_name("output-area", |v: &mut NamedView<ScrollView<TextView>>| {
+                    v.get_mut().get_inner_mut()
+                        .append(String::from_utf8(buf[..x].to_vec()).expect("all valid utf8"));
+
+                    v.get_mut().scroll_to_bottom();
+                });
+            }));
+            buf.fill(0);
+        }
+    });
+}
+
+fn call_api(msg: String) -> Result<Response> {
+    let client = reqwest::blocking::Client::new();
+
+    let req_body = GapiReqBody {
+        contents: vec![GapiReqParts {
+            parts: vec![GapiPart {
+                text: msg,
+            }],
+        }],
+    };
+
+    let mut res = client.post("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse")
+        .header("x-goog-api-key", get_api_key())
+        .header("Content-Type", "application/json")
+        .json(&req_body)
+        .send()?;
+
+    Ok(res)
+}
+
+fn show_message(siv: &mut Cursive, message: impl ToString) {
+    siv.add_layer(Dialog::around(
+        LinearLayout::vertical()
+            .child(TextView::new(message.to_string()))
+            .child(DummyView)
+            .child(Button::new("Ok", |s| {
+                s.pop_layer();
+            })),
+    ));
 }
 
 #[cfg(test)]
@@ -117,8 +209,12 @@ mod tests {
 
     #[test]
     fn it_can_call_gemini() {
-        let res = call_api();
+        let res = call_api("Hello, please give a very short response".to_owned());
         dbg!(&res);
-        assert!(true);
+        if let Ok(res) = res {
+            std::fs::write("./example.txt", res.text().expect("Res is valid text").as_bytes());
+        } else {
+            panic!("Req failed")
+        }
     }
 }
