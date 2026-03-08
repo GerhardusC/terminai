@@ -1,13 +1,18 @@
+use std::sync::{Arc, Mutex};
+
 use cursive::{
     Cursive, CursiveExt,
     view::{Nameable, Resizable, ScrollStrategy, Scrollable, SizeConstraint},
     views::{Dialog, LinearLayout, NamedView, ResizedView, ScrollView, TextArea, TextView},
 };
 use cursive_aligned_view::Alignable;
-use terminai::models::ollama;
+use terminai::models::{LlmContext, LlmContextManager, Message, ollama};
 
 fn main() {
     let mut siv = Cursive::new();
+
+    let context = Arc::new(Mutex::new(LlmContext::new()));
+    let context1 = context.clone();
 
     siv.add_layer(ResizedView::with_full_screen(
         LinearLayout::vertical()
@@ -25,7 +30,7 @@ fn main() {
                             .with_name("prompt-area"),
                     )
                     .title("Prompt")
-                    .button("PROMPT", |s| {
+                    .button("PROMPT", move |s| {
                         let prompt = s.call_on_name(
                             "prompt-area",
                             |v: &mut NamedView<ScrollView<TextArea>>| {
@@ -33,7 +38,10 @@ fn main() {
                             },
                         );
                         if let Some(prompt) = prompt {
-                            ollama::stream_res_to_gui(s, prompt.clone());
+                            context
+                                .clone()
+                                .add_message(Message::new("user".to_owned(), prompt));
+                            ollama::stream_res_to_gui(s, context.clone());
                         }
                     })
                     .button("CLEAR INPUT", |s| {
@@ -45,6 +53,9 @@ fn main() {
                         s.call_on_name("output-area", |v: &mut NamedView<ScrollView<TextView>>| {
                             v.get_mut().get_inner_mut().set_content("");
                         });
+                    })
+                    .button("CLEAR CONTEXT", move |_s| {
+                        context1.clear();
                     }),
                 )
                 .fixed_height(10),
