@@ -6,10 +6,15 @@ use cursive::{
     views::{Dialog, LinearLayout, NamedView, ResizedView, ScrollView, TextArea, TextView},
 };
 use cursive_aligned_view::Alignable;
-use terminai::models::{LlmContext, LlmContextManager, Message, ollama};
+use terminai::{
+    app_state::{AppState, Role, push_message_to_context, set_is_loading},
+    models::{LlmContext, LlmContextManager, Message, ollama},
+};
 
 fn main() {
     let mut siv = Cursive::new();
+
+    AppState::init(&mut siv);
 
     let context = Arc::new(Mutex::new(LlmContext::new()));
     let context1 = context.clone();
@@ -31,6 +36,8 @@ fn main() {
                     )
                     .title("Prompt")
                     .button("PROMPT", move |s| {
+                        set_is_loading(s);
+
                         let prompt = s.call_on_name(
                             "prompt-area",
                             |v: &mut NamedView<ScrollView<TextArea>>| {
@@ -38,6 +45,7 @@ fn main() {
                             },
                         );
                         if let Some(prompt) = prompt {
+                            // push_message_to_context(s, &prompt, Role::User);
                             context
                                 .clone()
                                 .add_message(Message::new("user".to_owned(), prompt));

@@ -4,7 +4,7 @@ pub mod gemini;
 pub mod ollama;
 
 pub struct LlmContext {
-    conversation: Vec<Message>,
+    pub conversation: Vec<Message>,
 }
 
 impl LlmContext {
