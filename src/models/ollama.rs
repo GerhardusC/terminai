@@ -4,17 +4,18 @@ use std::{
     io::Read,
     sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
 
 use cursive::{
     Cursive,
-    views::{NamedView, ScrollView, TextView},
+    views::{DummyView, LinearLayout, NamedView, ScrollView, TextArea, TextView},
 };
 use reqwest::blocking::Response;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    app_state::{set_is_loading, set_is_streaming, set_ready},
+    custom_views::spinner_view::SpinnerView,
     models::{LlmContext, LlmContextManager, Message},
     utils::show_message,
 };
@@ -23,22 +24,42 @@ pub fn stream_res_to_gui(s: &mut Cursive, context: Arc<Mutex<LlmContext>>) {
     let sink = s.cb_sink().clone();
 
     thread::spawn(move || {
-        let res = call_api(context.clone());
-
-        let _ = sink.send(Box::new(|s| {
-            set_is_loading(s);
+        let sink2 = sink.clone();
+        // NOTE: ASYNC REQ STARTS
+        let _ = sink.send(Box::new(move |s| {
+            s.call_on_name("prompt-container", |v: &mut NamedView<LinearLayout>| {
+                v.get_mut().insert_child(
+                    1,
+                    LinearLayout::horizontal()
+                        .child(DummyView)
+                        .child(SpinnerView::new(sink2, Duration::from_millis(50)))
+                        .child(DummyView)
+                        .child(TextView::new("Thinking...")),
+                );
+            });
+            s.call_on_name("prompt-area", |v: &mut NamedView<ScrollView<TextArea>>| {
+                v.get_mut().get_inner_mut().set_content("");
+            });
         }));
+
+        let res = call_api(context.clone());
 
         let Ok(mut res) = res else {
             let _ = sink.send(Box::new(move |s| {
-                set_ready(s);
+                // REMOVE LOADING SPINNER IF RES IS NOT OK.
+                s.call_on_name("prompt-container", |v: &mut NamedView<LinearLayout>| {
+                    v.get_mut().remove_child(1);
+                });
                 show_message(s, "Unable to send api request");
             }));
             return;
         };
 
-        let _ = sink.send(Box::new(|s| {
-            set_is_streaming(s);
+        // NOTE: STREAMING STARTS
+        let _ = sink.send(Box::new(move |s| {
+            s.call_on_name("prompt-container", |v: &mut NamedView<LinearLayout>| {
+                v.get_mut().remove_child(1);
+            });
         }));
 
         let full_message = Arc::new(Mutex::new(String::new()));
@@ -88,8 +109,6 @@ pub fn stream_res_to_gui(s: &mut Cursive, context: Arc<Mutex<LlmContext>>) {
                 v.get_mut().get_inner_mut().append("\n\n");
                 v.get_mut().scroll_to_bottom();
             });
-            // Unset loading state
-            set_ready(s);
         }));
     });
 }
@@ -98,17 +117,14 @@ fn call_api(context: Arc<Mutex<LlmContext>>) -> Result<Response> {
     let client = reqwest::blocking::Client::new();
 
     let messages = match context.lock() {
-        Ok(context) => {
-            context
-                .conversation
-                .iter()
-                .map(|x| OutgoingMessage {
-                    // TODO: Rmove these clones, this is bad.
-                    role: x.role.clone(),
-                    content: x.content.clone(),
-                })
-                .collect::<Vec<_>>()
-        }
+        Ok(context) => context
+            .conversation
+            .iter()
+            .map(|x| OutgoingMessage {
+                role: x.role.clone(),
+                content: x.content.clone(),
+            })
+            .collect::<Vec<_>>(),
         Err(_) => vec![],
     };
 
