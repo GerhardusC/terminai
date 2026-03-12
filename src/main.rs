@@ -7,7 +7,7 @@ use cursive::{
 };
 use cursive_aligned_view::Alignable;
 use terminai::{
-    app_state::{AppState, Role, push_message_to_context, set_is_loading},
+    app_state::{AppState, set_is_loading},
     models::{LlmContext, LlmContextManager, Message, ollama},
 };
 
@@ -45,7 +45,6 @@ fn main() {
                             },
                         );
                         if let Some(prompt) = prompt {
-                            // push_message_to_context(s, &prompt, Role::User);
                             context
                                 .clone()
                                 .add_message(Message::new("user".to_owned(), prompt));

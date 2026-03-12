@@ -14,6 +14,7 @@ use reqwest::blocking::Response;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    app_state::{set_is_loading, set_is_streaming, set_ready},
     models::{LlmContext, LlmContextManager, Message},
     utils::show_message,
 };
@@ -24,12 +25,21 @@ pub fn stream_res_to_gui(s: &mut Cursive, context: Arc<Mutex<LlmContext>>) {
     thread::spawn(move || {
         let res = call_api(context.clone());
 
+        let _ = sink.send(Box::new(|s| {
+            set_is_loading(s);
+        }));
+
         let Ok(mut res) = res else {
             let _ = sink.send(Box::new(move |s| {
+                set_ready(s);
                 show_message(s, "Unable to send api request");
             }));
             return;
         };
+
+        let _ = sink.send(Box::new(|s| {
+            set_is_streaming(s);
+        }));
 
         let full_message = Arc::new(Mutex::new(String::new()));
         let mut buf = [0; 0x1FF];
@@ -78,6 +88,8 @@ pub fn stream_res_to_gui(s: &mut Cursive, context: Arc<Mutex<LlmContext>>) {
                 v.get_mut().get_inner_mut().append("\n\n");
                 v.get_mut().scroll_to_bottom();
             });
+            // Unset loading state
+            set_ready(s);
         }));
     });
 }
