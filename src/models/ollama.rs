@@ -1,8 +1,8 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use std::{
     collections::HashMap,
     io::Read,
-    sync::{Arc, Mutex, RwLock, mpsc::Sender},
+    sync::{Arc, Mutex, mpsc::Sender},
     thread,
     time::Duration,
 };
@@ -140,7 +140,7 @@ pub fn stream_res_to_gui(s: &mut Cursive, context: Arc<Mutex<LlmContext>>) {
 pub fn stream_res_to_llm_context(
     sender: Sender<LlmContextUpdateMessage>,
     sink: CbSink,
-    context: Arc<RwLock<Vec<Message>>>,
+    context: Vec<OutgoingMessage>,
 ) {
     let _ = sender.send(LlmContextUpdateMessage::UpdateLoadingState(
         LoadingState::Fetching,
@@ -165,6 +165,8 @@ pub fn stream_res_to_llm_context(
     };
 
     let mut buf = [0; 0xFFF];
+    let mut role: Role = Role::Assistant;
+    let mut thinking = false;
     while let Ok(x) = res.read(&mut buf)
         && x > 0
     {
@@ -175,18 +177,28 @@ pub fn stream_res_to_llm_context(
         match parsed {
             Ok(parsed) => {
                 if parsed.message.content == "<think>" {
+                    thinking = true;
                     let _ = sender.send(LlmContextUpdateMessage::UpdateLoadingState(
                         LoadingState::Thinking,
                     ));
                 } else if parsed.message.content == "</think>" {
+                    thinking = false;
                     let _ = sender.send(LlmContextUpdateMessage::UpdateLoadingState(
                         LoadingState::Streaming,
                     ));
                 };
 
-                let _ = sender.send(LlmContextUpdateMessage::AppendToCurrentMessage(
-                    parsed.message.content,
-                ));
+                if thinking {
+                    let _ = sender.send(LlmContextUpdateMessage::AddToCurrentThought(
+                        parsed.message.content,
+                    ));
+                } else {
+                    let _ = sender.send(LlmContextUpdateMessage::AppendToCurrentMessage(
+                        parsed.message.content,
+                    ));
+                }
+
+                role = parsed.message.role.as_str().into();
             }
             Err(e) => {
                 let _ = sink.send(Box::new(move |s| {
@@ -199,7 +211,7 @@ pub fn stream_res_to_llm_context(
         }
         buf.fill(0);
     }
-    let _ = sender.send(LlmContextUpdateMessage::CurrentMessageEnd);
+    let _ = sender.send(LlmContextUpdateMessage::CurrentMessageEnd(role));
 }
 
 fn call_api_with_mux(context: Arc<Mutex<LlmContext>>) -> Result<Response> {
@@ -231,19 +243,8 @@ fn call_api_with_mux(context: Arc<Mutex<LlmContext>>) -> Result<Response> {
     Ok(res)
 }
 
-pub fn call_api(conversation: Arc<RwLock<Vec<Message>>>) -> Result<Response> {
+pub fn call_api(messages: Vec<OutgoingMessage>) -> Result<Response> {
     let client = reqwest::blocking::Client::new();
-
-    let messages = match conversation.read() {
-        Ok(conversation) => conversation
-            .iter()
-            .map(|x| OutgoingMessage {
-                role: x.role.to_string(),
-                content: x.content.clone(),
-            })
-            .collect::<Vec<_>>(),
-        Err(e) => return Err(anyhow!("Mutext poisoned: {}", e)),
-    };
 
     let req_body = OllamaStreamingRequest {
         model: "deepseek-r1".to_owned(),
@@ -263,6 +264,15 @@ pub fn call_api(conversation: Arc<RwLock<Vec<Message>>>) -> Result<Response> {
 pub struct OllamaStreamingRequest {
     model: String,
     messages: Vec<OutgoingMessage>,
+}
+
+impl From<&Message> for OutgoingMessage {
+    fn from(value: &Message) -> Self {
+        Self {
+            role: value.role.to_string(),
+            content: value.content.to_string(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]

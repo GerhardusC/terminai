@@ -82,7 +82,7 @@ fn main() {
     let text_content = TextContent::new("");
     let llm_context = LlmContext::new(sink, text_content.clone());
     let llm_prompt_view = LlmPromptView::new(llm_context.update_tx.clone());
-    let llm_response_view = LlmResponseView::new(llm_context.update_tx.clone(), text_content);
+    let llm_response_view = LlmResponseView::new(text_content);
 
     llm_context.start();
 

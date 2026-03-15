@@ -1,20 +1,15 @@
-use std::sync::mpsc::Sender;
-
 use cursive::{
     View,
     view::{Nameable, Scrollable, SizeConstraint},
     views::{NamedView, ResizedView, ScrollView, TextContent, TextView},
 };
 
-use crate::llm_context::LlmContextUpdateMessage;
-
 pub struct LlmResponseView {
     view: ResizedView<NamedView<ScrollView<TextView>>>,
-    pub update_tx: Sender<LlmContextUpdateMessage>,
 }
 
 impl LlmResponseView {
-    pub fn new(sender: Sender<LlmContextUpdateMessage>, content: TextContent) -> Self {
+    pub fn new(content: TextContent) -> Self {
         let view = ResizedView::new(
             SizeConstraint::Full,
             SizeConstraint::Free,
@@ -23,10 +18,7 @@ impl LlmResponseView {
                 .with_name("response-container"),
         );
 
-        Self {
-            update_tx: sender,
-            view,
-        }
+        Self { view }
     }
 }
 

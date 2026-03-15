@@ -10,13 +10,16 @@ use crate::llm_context::{LlmContextUpdateMessage, Message, Role};
 
 pub struct LlmPromptView {
     view: ResizedView<Dialog>,
-    pub update_tx: Sender<LlmContextUpdateMessage>,
 }
 
 impl LlmPromptView {
     pub fn new(sender: Sender<LlmContextUpdateMessage>) -> Self {
         let sender_p = sender.clone();
-        let sender_ctx = sender_p.clone();
+        let sender_ctx = sender.clone();
+        let sender_clear_ctx = sender.clone();
+        let sender_clear_prompt = sender.clone();
+        let sender_clear_output = sender.clone();
+
         let view = ResizedView::with_full_width(
             Dialog::around(
                 TextArea::new()
@@ -37,20 +40,21 @@ impl LlmPromptView {
                     let _ = sender_p.send(LlmContextUpdateMessage::CallApi);
                 };
             })
-            .button("CLEAR", move |s| {
-                s.call_on_name("prompt-area", move |v: &mut NamedView<TextArea>| {
-                    v.get_mut().set_content("");
-                });
+            .button("CLEAR PROMPT", move |_| {
+                let _ = sender_clear_prompt.send(LlmContextUpdateMessage::ClearPrompt);
+            })
+            .button("CLEAR OUTPUT", move |_| {
+                let _ = sender_clear_output.send(LlmContextUpdateMessage::ClearOutput);
+            })
+            .button("CLEAR CONTEXT", move |_| {
+                let _ = sender_clear_ctx.send(LlmContextUpdateMessage::ClearContext);
             })
             .button("VIEW CONTEXT", move |_| {
                 let _ = sender_ctx.send(LlmContextUpdateMessage::ViewCurrentContext);
             }),
         );
 
-        Self {
-            view,
-            update_tx: sender,
-        }
+        Self { view }
     }
 }
 

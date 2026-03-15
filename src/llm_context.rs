@@ -1,19 +1,20 @@
 use std::{
     fmt::Display,
-    sync::{
-        Arc, RwLock,
-        mpsc::{self, Receiver, Sender},
-    },
+    sync::mpsc::{self, Receiver, Sender},
     thread,
     time::Duration,
 };
 
 use cursive::{
     CbSink,
-    views::{DummyView, LinearLayout, NamedView, ScrollView, TextContent, TextView},
+    views::{DummyView, LinearLayout, NamedView, ScrollView, TextArea, TextContent, TextView},
 };
 
-use crate::{custom_views::spinner_view::SpinnerView, models::ollama, utils::show_message};
+use crate::{
+    custom_views::spinner_view::SpinnerView,
+    models::ollama::{self, OutgoingMessage},
+    utils::show_message,
+};
 
 pub struct LlmContext {
     pub conversation: Vec<Message>,
@@ -22,6 +23,7 @@ pub struct LlmContext {
     pub sink: CbSink,
     pub text_content: TextContent,
     current_message: String,
+    current_thought: String,
 }
 
 pub enum LoadingState {
@@ -35,17 +37,22 @@ pub enum LlmContextUpdateMessage {
     // DO API INTERACTIONS TODO: Add associated model
     CallApi,
     UpdateLoadingState(LoadingState),
-    CurrentMessageEnd,
+    CurrentMessageEnd(Role),
+    AddToCurrentThought(String),
+
+    // VISUAL ONLY
+    ClearOutput,
 
     // CURRENT MESSAGE
     AppendToCurrentMessage(String),
+    ClearPrompt,
 
     // FOR DEBUGGING
     ViewCurrentContext,
 
     // FULL CONTEXT
     AddMessage(Message),
-    Clear,
+    ClearContext,
 
     // SYSTEM
     Stop,
@@ -58,6 +65,7 @@ pub enum Role {
     System,
     Assistant,
     Tool,
+    Other(String),
 }
 
 impl Display for Role {
@@ -68,7 +76,21 @@ impl Display for Role {
             Role::System => "system",
             Role::Assistant => "assistant",
             Role::Tool => "tool",
+            Role::Other(s) => s,
         })
+    }
+}
+
+impl From<&str> for Role {
+    fn from(value: &str) -> Self {
+        match value {
+            "user" => Role::User,
+            "model" => Role::Model,
+            "assistant" => Role::Assistant,
+            "tool" => Role::Tool,
+            "system" => Role::System,
+            _ => Role::Other(value.to_owned()),
+        }
     }
 }
 
@@ -83,25 +105,30 @@ impl LlmContext {
             sink,
             text_content,
             current_message: String::from(""),
+            current_thought: String::from(""),
         }
     }
 
     pub fn start(mut self) {
         // This is the only thread abble to write to the messages rwlock.
         thread::spawn(move || {
-            let messages_ref = Arc::new(RwLock::new(self.conversation));
+            // let messages_ref = Arc::new(RwLock::new(self.conversation));
             loop {
                 let sink = self.sink.clone();
-                let messages_ref2 = messages_ref.clone();
                 if let Ok(msg) = self.update_rx.recv() {
                     match msg {
                         LlmContextUpdateMessage::CallApi => {
-                            let messages_ref = messages_ref.clone();
                             let sink = self.sink.clone();
                             let update_tx = self.update_tx.clone();
 
+                            let messages = self
+                                .conversation
+                                .iter()
+                                .map(|item| item.into())
+                                .collect::<Vec<OutgoingMessage>>();
+
                             thread::spawn(move || {
-                                ollama::stream_res_to_llm_context(update_tx, sink, messages_ref);
+                                ollama::stream_res_to_llm_context(update_tx, sink, messages);
                             });
                         }
                         LlmContextUpdateMessage::UpdateLoadingState(loading_state) => {
@@ -167,17 +194,12 @@ impl LlmContext {
                                 }
                             };
                         }
-                        LlmContextUpdateMessage::CurrentMessageEnd => {
-                            if let Ok(mut messages) = messages_ref2.write() {
-                                messages
-                                    .push(Message::new(Role::Model, self.current_message.clone()));
-                            }
-
+                        LlmContextUpdateMessage::CurrentMessageEnd(role) => {
+                            self.conversation
+                                .push(Message::new(role, self.current_message.clone()));
                             self.current_message.clear();
-                            let content = self.text_content.clone();
-                            let _ = sink.send(Box::new(move |_| {
-                                content.append("\n");
-                            }));
+                            self.current_thought.clear();
+
                             let _ =
                                 self.update_tx
                                     .send(LlmContextUpdateMessage::UpdateLoadingState(
@@ -199,27 +221,33 @@ impl LlmContext {
                                 );
                             }));
                         }
-                        LlmContextUpdateMessage::AddMessage(message) => {
-                            if let Ok(mut messages) = messages_ref2.write() {
-                                messages.push(message);
-                            }
-                            self.text_content.append("\n\n");
+                        LlmContextUpdateMessage::AddToCurrentThought(thought) => {
+                            self.current_thought.push_str(&thought);
+                            self.text_content.append(thought);
                         }
-                        LlmContextUpdateMessage::Clear => {
-                            if let Ok(mut messages) = messages_ref2.write() {
-                                messages.clear();
-                            }
+                        LlmContextUpdateMessage::AddMessage(message) => {
+                            self.conversation.push(message);
+                        }
+                        LlmContextUpdateMessage::ClearPrompt => {
+                            self.current_message.clear();
+                            let _ = self.sink.send(Box::new(|s| {
+                                s.call_on_name("prompt-area", |v: &mut NamedView<TextArea>| {
+                                    v.get_mut().set_content("");
+                                });
+                            }));
+                        }
+                        LlmContextUpdateMessage::ClearOutput => {
+                            self.text_content.set_content("");
+                        }
+                        LlmContextUpdateMessage::ClearContext => {
+                            self.conversation.clear();
                             self.current_message.clear();
                             self.text_content.set_content("");
                         }
                         LlmContextUpdateMessage::ViewCurrentContext => {
-                            let messages = messages_ref2.clone();
+                            let messages = format!("{:?}", &self.conversation);
                             let _ = sink.send(Box::new(move |s| {
-                                let mut msg_str = None;
-                                if let Ok(messages) = messages.read() {
-                                    msg_str = Some(format!("{:#?}", &messages));
-                                };
-                                show_message(s, format!("{:#?}", msg_str));
+                                show_message(s, messages);
                             }));
                         }
                         LlmContextUpdateMessage::Stop => break,
