@@ -11,19 +11,19 @@ use cursive::{
     views::{TextContent, TextView},
 };
 
-pub struct SpinnerStartSignal;
+pub struct SpinnerStopSignal;
 
 pub struct Spinner {
     cycle: Cycle<IntoIter<String>>,
     cb_sink: CbSink,
     content: TextContent,
-    spin_receiver: Receiver<SpinnerStartSignal>,
+    spin_receiver: Receiver<SpinnerStopSignal>,
     delay: Duration,
 }
 
 pub struct SpinnerView {
     view: TextView,
-    spin_sender: Sender<SpinnerStartSignal>,
+    spin_sender: Sender<SpinnerStopSignal>,
 }
 
 impl Spinner {
@@ -51,9 +51,9 @@ impl Spinner {
 impl SpinnerView {
     pub fn new(cb_sink: CbSink, delay: Duration) -> Self {
         let content = TextContent::new("⠙");
-        let text_view = TextView::new_with_content(content.clone()).no_wrap();
+        let text_view = TextView::new_with_content(content.clone());
 
-        let (tx, rx) = mpsc::channel::<SpinnerStartSignal>();
+        let (tx, rx) = mpsc::channel::<SpinnerStopSignal>();
 
         let spinner = Spinner {
             cycle: vec![
@@ -108,6 +108,6 @@ impl View for SpinnerView {
 
 impl Drop for SpinnerView {
     fn drop(&mut self) {
-        let _ = self.spin_sender.send(SpinnerStartSignal);
+        let _ = self.spin_sender.send(SpinnerStopSignal);
     }
 }

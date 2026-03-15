@@ -2,13 +2,13 @@ use anyhow::Result;
 use std::{
     collections::HashMap,
     io::Read,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc::Sender},
     thread,
     time::Duration,
 };
 
 use cursive::{
-    Cursive,
+    CbSink, Cursive,
     views::{DummyView, LinearLayout, NamedView, ScrollView, TextArea, TextView},
 };
 use reqwest::blocking::Response;
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     custom_views::spinner_view::SpinnerView,
-    models::{LlmContext, LlmContextManager, Message},
+    models::{LlmContext, LlmContextManager, LlmContextUpdateMessage, LoadingState, Message, Role},
     utils::show_message,
 };
 
@@ -42,7 +42,7 @@ pub fn stream_res_to_gui(s: &mut Cursive, context: Arc<Mutex<LlmContext>>) {
             });
         }));
 
-        let res = call_api(context.clone());
+        let res = call_api_with_mux(context.clone());
 
         let Ok(mut res) = res else {
             let _ = sink.send(Box::new(move |s| {
@@ -100,7 +100,7 @@ pub fn stream_res_to_gui(s: &mut Cursive, context: Arc<Mutex<LlmContext>>) {
         }
 
         if let Ok(msg) = full_message.lock() {
-            context.add_message(Message::new("system".to_owned(), msg.to_string()));
+            context.add_message(Message::new(Role::System, msg.to_string()));
         }
 
         // Add new line after response
@@ -113,7 +113,61 @@ pub fn stream_res_to_gui(s: &mut Cursive, context: Arc<Mutex<LlmContext>>) {
     });
 }
 
-fn call_api(context: Arc<Mutex<LlmContext>>) -> Result<Response> {
+pub fn stream_res_to_llm_context(
+    sender: Sender<LlmContextUpdateMessage>,
+    sink: CbSink,
+    context: &LlmContext,
+) {
+    let _ = sender.send(LlmContextUpdateMessage::UpdateLoadingState(
+        LoadingState::Fetching,
+    ));
+    let res = call_api(context);
+    let _ = sender.send(LlmContextUpdateMessage::UpdateLoadingState(
+        LoadingState::Streaming,
+    ));
+
+    let Ok(mut res) = res else {
+        let _ = sink.send(Box::new(move |s| {
+            show_message(s, "Unable to send api request");
+        }));
+        let _ = sender.send(LlmContextUpdateMessage::UpdateLoadingState(
+            LoadingState::Ready,
+        ));
+        return;
+    };
+
+    let mut buf = [0; 0x1FF];
+    while let Ok(x) = res.read(&mut buf)
+        && x > 0
+    {
+        let res = String::from_utf8(buf[..x].to_vec()).expect("all valid utf8");
+
+        let parsed: Result<OllamaStreamingResponse, serde_json::Error> = serde_json::from_str(&res);
+
+        match parsed {
+            Ok(parsed) => {
+                let _ = sender.send(LlmContextUpdateMessage::AppendToCurrentMessage(
+                    parsed.message.content,
+                ));
+            }
+            Err(e) => {
+                let _ = sink.send(Box::new(move |s| {
+                    if e.is_eof() {
+                        return;
+                    }
+                    show_message(s, format!("Err: {}, Res: {:?}", e, res.clone()));
+                }));
+            }
+        }
+        buf.fill(0);
+    }
+    // When finished update loading state.
+    let _ = sender.send(LlmContextUpdateMessage::UpdateLoadingState(
+        LoadingState::Ready,
+    ));
+}
+
+fn call_api_with_mux(context: Arc<Mutex<LlmContext>>) -> Result<Response> {
     let client = reqwest::blocking::Client::new();
 
     let messages = match context.lock() {
@@ -121,12 +175,38 @@ fn call_api(context: Arc<Mutex<LlmContext>>) -> Result<Response> {
             .conversation
             .iter()
             .map(|x| OutgoingMessage {
-                role: x.role.clone(),
+                role: x.role.to_string(),
                 content: x.content.clone(),
             })
             .collect::<Vec<_>>(),
         Err(_) => vec![],
     };
+
+    let req_body = OllamaStreamingRequest {
+        model: "gemma3".to_owned(),
+        messages,
+    };
+
+    let res = client
+        .post("http://localhost:11434/api/chat")
+        .header("Content-Type", "application/json")
+        .json(&req_body)
+        .send()?;
+
+    Ok(res)
+}
+
+pub fn call_api(context: &LlmContext) -> Result<Response> {
+    let client = reqwest::blocking::Client::new();
+
+    let messages = context
+        .conversation
+        .iter()
+        .map(|x| OutgoingMessage {
+            role: x.role.to_string(),
+            content: x.content.clone(),
+        })
+        .collect::<Vec<_>>();
 
     let req_body = OllamaStreamingRequest {
         model: "gemma3".to_owned(),

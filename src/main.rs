@@ -3,15 +3,19 @@ use std::sync::{Arc, Mutex};
 use cursive::{
     Cursive, CursiveExt,
     view::{Nameable, Resizable, ScrollStrategy, Scrollable, SizeConstraint},
-    views::{Dialog, LinearLayout, NamedView, ResizedView, ScrollView, TextArea, TextView},
+    views::{
+        Dialog, LinearLayout, NamedView, ResizedView, ScrollView, TextArea, TextContent, TextView,
+    },
 };
 use cursive_aligned_view::Alignable;
-use terminai::models::{LlmContext, LlmContextManager, Message, ollama};
+use terminai::models::{LlmContext, LlmContextManager, Message, Role, ollama};
 
 fn main() {
     let mut siv = Cursive::new();
 
-    let context = Arc::new(Mutex::new(LlmContext::new()));
+    let sink = siv.cb_sink().clone();
+
+    let context = Arc::new(Mutex::new(LlmContext::new(sink, TextContent::new(""))));
     let context1 = context.clone();
 
     siv.add_layer(ResizedView::with_full_screen(
@@ -40,7 +44,7 @@ fn main() {
                         if let Some(prompt) = prompt {
                             context
                                 .clone()
-                                .add_message(Message::new("user".to_owned(), prompt));
+                                .add_message(Message::new(Role::User, prompt));
                             ollama::stream_res_to_gui(s, context.clone());
                         }
                     })
