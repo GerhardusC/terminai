@@ -16,9 +16,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     custom_views::spinner_view::SpinnerView,
-    models::{LlmContext, LlmContextManager, LlmContextUpdateMessage, LoadingState, Message, Role},
+    llm_context::{LlmContext, LlmContextUpdateMessage, LoadingState, Message, Role},
     utils::show_message,
 };
+
+pub trait LlmContextManager {
+    fn add_message(self, msg: Message) -> Self;
+    fn clear(&self);
+}
+
+impl LlmContextManager for Arc<Mutex<LlmContext>> {
+    fn add_message(self, msg: Message) -> Self {
+        if let Ok(mut context) = self.lock() {
+            context.conversation.push(msg);
+        }
+        self
+    }
+
+    fn clear(&self) {
+        if let Ok(mut context) = self.lock() {
+            context.conversation.clear();
+        }
+    }
+}
 
 pub fn stream_res_to_gui(s: &mut Cursive, context: Arc<Mutex<LlmContext>>) {
     let sink = s.cb_sink().clone();

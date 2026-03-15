@@ -8,7 +8,10 @@ use cursive::{
     },
 };
 use cursive_aligned_view::Alignable;
-use terminai::models::{LlmContext, LlmContextManager, Message, Role, ollama};
+use terminai::{
+    llm_context::{LlmContext, Message, Role},
+    models::ollama::{self, LlmContextManager},
+};
 
 fn main() {
     let mut siv = Cursive::new();
