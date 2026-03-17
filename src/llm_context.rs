@@ -7,7 +7,8 @@ use std::{
 
 use cursive::{
     CbSink,
-    views::{DummyView, LinearLayout, NamedView, ScrollView, TextArea, TextContent, TextView},
+    view::Nameable,
+    views::{DummyView, LinearLayout, NamedView, TextArea, TextContent, TextView},
 };
 
 use crate::{
@@ -15,6 +16,12 @@ use crate::{
     models::ollama::{self, OutgoingMessage},
     utils::show_message,
 };
+
+static LOADING_VIEW_NAME: &str = "loading-view";
+static PROMPT_AREA_NAME: &str = "prompt-area";
+
+type LoadingArea = NamedView<LinearLayout>;
+type PromptArea = NamedView<TextArea>;
 
 pub struct LlmContext {
     pub conversation: Vec<Message>,
@@ -52,6 +59,7 @@ pub enum LlmContextUpdateMessage {
 
     // FULL CONTEXT
     AddMessage(Message),
+    AddUserPrompt,
     ClearContext,
 
     // SYSTEM
@@ -95,8 +103,9 @@ impl From<&str> for Role {
 }
 
 impl LlmContext {
-    pub fn new(sink: CbSink, text_content: TextContent) -> Self {
+    pub fn new(sink: CbSink) -> Self {
         let (update_tx, update_rx) = mpsc::channel::<LlmContextUpdateMessage>();
+        let text_content = TextContent::new("");
 
         Self {
             conversation: vec![],
@@ -109,10 +118,17 @@ impl LlmContext {
         }
     }
 
-    pub fn start(mut self) {
-        // This is the only thread abble to write to the messages rwlock.
+    fn create_loading_view() -> LoadingArea {
+        LinearLayout::horizontal().with_name(LOADING_VIEW_NAME)
+    }
+
+    fn create_prompt_area() -> PromptArea {
+        TextArea::new().with_name(PROMPT_AREA_NAME)
+    }
+
+    pub fn start(mut self) -> (PromptArea, LoadingArea) {
+        // This thread is the only one that can write to views.
         thread::spawn(move || {
-            // let messages_ref = Arc::new(RwLock::new(self.conversation));
             loop {
                 let sink = self.sink.clone();
                 if let Ok(msg) = self.update_rx.recv() {
@@ -136,7 +152,7 @@ impl LlmContext {
                                 LoadingState::Ready => {
                                     let _ = sink.send(Box::new(|s| {
                                         s.call_on_name(
-                                            "loading-view",
+                                            LOADING_VIEW_NAME,
                                             |v: &mut NamedView<LinearLayout>| {
                                                 v.get_mut().clear();
                                                 v.get_mut().add_child(DummyView);
@@ -148,13 +164,14 @@ impl LlmContext {
                                     let sink_cp = sink.clone();
                                     let _ = sink.send(Box::new(|s| {
                                         s.call_on_name(
-                                            "loading-view",
+                                            LOADING_VIEW_NAME,
                                             |v: &mut NamedView<LinearLayout>| {
                                                 v.get_mut().clear();
                                                 v.get_mut().add_child(SpinnerView::new(
                                                     sink_cp,
                                                     Duration::from_millis(50),
                                                 ));
+                                                v.get_mut().add_child(DummyView);
                                                 v.get_mut().add_child(TextView::new("Fetching"));
                                             },
                                         );
@@ -164,13 +181,14 @@ impl LlmContext {
                                     let sink_cp = sink.clone();
                                     let _ = sink.send(Box::new(|s| {
                                         s.call_on_name(
-                                            "loading-view",
+                                            LOADING_VIEW_NAME,
                                             |v: &mut NamedView<LinearLayout>| {
                                                 v.get_mut().clear();
                                                 v.get_mut().add_child(SpinnerView::new(
                                                     sink_cp,
                                                     Duration::from_millis(50),
                                                 ));
+                                                v.get_mut().add_child(DummyView);
                                                 v.get_mut().add_child(TextView::new("Cooking"));
                                             },
                                         );
@@ -180,13 +198,14 @@ impl LlmContext {
                                     let sink_cp = sink.clone();
                                     let _ = sink.send(Box::new(|s| {
                                         s.call_on_name(
-                                            "loading-view",
+                                            LOADING_VIEW_NAME,
                                             |v: &mut NamedView<LinearLayout>| {
                                                 v.get_mut().clear();
                                                 v.get_mut().add_child(SpinnerView::new(
                                                     sink_cp,
                                                     Duration::from_millis(50),
                                                 ));
+                                                v.get_mut().add_child(DummyView);
                                                 v.get_mut().add_child(TextView::new("Thinking"));
                                             },
                                         );
@@ -211,14 +230,8 @@ impl LlmContext {
 
                             // All content gets sent to update screen by default
                             let content = self.text_content.clone();
-                            let _ = sink.send(Box::new(move |s| {
+                            let _ = sink.send(Box::new(move |_| {
                                 content.append(msg);
-                                s.call_on_name(
-                                    "response-container",
-                                    |v: &mut NamedView<ScrollView<TextView>>| {
-                                        v.get_mut().scroll_to_bottom();
-                                    },
-                                );
                             }));
                         }
                         LlmContextUpdateMessage::AddToCurrentThought(thought) => {
@@ -231,7 +244,7 @@ impl LlmContext {
                         LlmContextUpdateMessage::ClearPrompt => {
                             self.current_message.clear();
                             let _ = self.sink.send(Box::new(|s| {
-                                s.call_on_name("prompt-area", |v: &mut NamedView<TextArea>| {
+                                s.call_on_name(PROMPT_AREA_NAME, |v: &mut NamedView<TextArea>| {
                                     v.get_mut().set_content("");
                                 });
                             }));
@@ -250,11 +263,31 @@ impl LlmContext {
                                 show_message(s, messages);
                             }));
                         }
+                        LlmContextUpdateMessage::AddUserPrompt => {
+                            let update_tx = self.update_tx.clone();
+                            let _ = sink.send(Box::new(move |s| {
+                                if let Some(prompt) = s.call_on_name(
+                                    PROMPT_AREA_NAME,
+                                    move |v: &mut NamedView<TextArea>| {
+                                        v.get_mut().get_content().to_owned()
+                                    },
+                                ) {
+                                    let _ = update_tx.send(LlmContextUpdateMessage::AddMessage(
+                                        Message::new(Role::User, prompt),
+                                    ));
+
+                                    let _ = update_tx.send(LlmContextUpdateMessage::CallApi);
+                                };
+                            }));
+                        }
                         LlmContextUpdateMessage::Stop => break,
                     }
                 }
             }
         });
+
+        let (prompt_area, loading_view) = (Self::create_prompt_area(), Self::create_loading_view());
+        (prompt_area, loading_view)
     }
 }
 

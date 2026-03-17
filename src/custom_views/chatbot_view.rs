@@ -1,28 +1,37 @@
-use cursive::{
-    View,
-    view::{ScrollStrategy, Scrollable, SizeConstraint},
-    views::{ResizedView, ScrollView, TextContent, TextView},
+use crate::{
+    custom_views::{llm_prompt_view::LlmPromptView, llm_response_view::LlmResponseView},
+    llm_context::LlmContext,
 };
+use cursive::{CbSink, View, views::LinearLayout};
 
-pub struct LlmResponseView {
-    view: ResizedView<ScrollView<TextView>>,
+pub struct ChatbotView {
+    view: LinearLayout,
 }
 
-impl LlmResponseView {
-    pub fn new(content: TextContent) -> Self {
-        let view = ResizedView::new(
-            SizeConstraint::Full,
-            SizeConstraint::Free,
-            TextView::new_with_content(content)
-                .scrollable()
-                .scroll_strategy(ScrollStrategy::StickToBottom),
+impl ChatbotView {
+    pub fn new(sink: CbSink) -> Self {
+        let llm_context = LlmContext::new(sink);
+
+        let (update_tx, text_content) = (
+            llm_context.update_tx.clone(),
+            llm_context.text_content.clone(),
         );
+
+        let (prompt_area, loading_area) = llm_context.start();
+
+        let llm_prompt_view = LlmPromptView::new(update_tx, prompt_area);
+        let llm_response_view = LlmResponseView::new(text_content);
+
+        let view = LinearLayout::vertical()
+            .child(llm_response_view)
+            .child(loading_area)
+            .child(llm_prompt_view);
 
         Self { view }
     }
 }
 
-impl View for LlmResponseView {
+impl View for ChatbotView {
     fn draw(&self, printer: &cursive::Printer) {
         self.view.draw(printer);
     }

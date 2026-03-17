@@ -2,18 +2,20 @@ use std::sync::mpsc::Sender;
 
 use cursive::{
     View,
-    view::{Nameable, ScrollStrategy, Scrollable},
+    view::{ScrollStrategy, Scrollable},
     views::{Dialog, NamedView, ResizedView, TextArea},
 };
 
-use crate::llm_context::{LlmContextUpdateMessage, Message, Role};
+use crate::llm_context::LlmContextUpdateMessage;
 
 pub struct LlmPromptView {
     view: ResizedView<Dialog>,
 }
 
+type PromptArea = NamedView<TextArea>;
+
 impl LlmPromptView {
-    pub fn new(sender: Sender<LlmContextUpdateMessage>) -> Self {
+    pub fn new(sender: Sender<LlmContextUpdateMessage>, prompt_area: PromptArea) -> Self {
         let sender_p = sender.clone();
         let sender_ctx = sender.clone();
         let sender_clear_ctx = sender.clone();
@@ -22,23 +24,13 @@ impl LlmPromptView {
 
         let view = ResizedView::with_full_width(
             Dialog::around(
-                TextArea::new()
-                    .with_name("prompt-area")
+                prompt_area
                     .scrollable()
                     .scroll_strategy(ScrollStrategy::StickToBottom),
             )
-            .button("PROMPT", move |s| {
-                if let Some(prompt) = s
-                    .call_on_name("prompt-area", move |v: &mut NamedView<TextArea>| {
-                        v.get_mut().get_content().to_owned()
-                    })
-                {
-                    let _ = sender_p.send(LlmContextUpdateMessage::AddMessage(Message::new(
-                        Role::User,
-                        prompt,
-                    )));
-                    let _ = sender_p.send(LlmContextUpdateMessage::CallApi);
-                };
+            .button("PROMPT", move |_| {
+                let _ = sender_p.send(LlmContextUpdateMessage::AddUserPrompt);
+                let _ = sender_p.send(LlmContextUpdateMessage::ClearPrompt);
             })
             .button("CLEAR PROMPT", move |_| {
                 let _ = sender_clear_prompt.send(LlmContextUpdateMessage::ClearPrompt);
