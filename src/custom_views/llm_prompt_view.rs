@@ -17,6 +17,7 @@ type PromptArea = NamedView<TextArea>;
 impl LlmPromptView {
     pub fn new(sender: Sender<LlmContextUpdateMessage>, prompt_area: PromptArea) -> Self {
         let sender_p = sender.clone();
+        let sender_t = sender.clone();
         let sender_ctx = sender.clone();
         let sender_clear_ctx = sender.clone();
         let sender_clear_prompt = sender.clone();
@@ -30,6 +31,9 @@ impl LlmPromptView {
             )
             .button("PROMPT", move |_| {
                 let _ = sender_p.send(LlmContextUpdateMessage::AddUserPrompt);
+            })
+            .button("TOGGLE THOUGHTS", move |_| {
+                let _ = sender_t.send(LlmContextUpdateMessage::ToggleThoughts);
             })
             .button("CLEAR PROMPT", move |_| {
                 let _ = sender_clear_prompt.send(LlmContextUpdateMessage::ClearPrompt);

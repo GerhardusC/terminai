@@ -7,7 +7,7 @@ use std::{
 
 use cursive::{
     CbSink,
-    theme::{Color, Style},
+    theme::{BaseColor, Color, Style},
     utils::markup::StyledString,
     view::Nameable,
     views::{DummyView, LinearLayout, NamedView, TextArea, TextContent, TextView},
@@ -33,6 +33,7 @@ pub struct LlmContext {
     pub text_content: TextContent,
     current_message: String,
     current_thought: String,
+    show_thoughts: bool,
 }
 
 pub enum LoadingState {
@@ -62,6 +63,7 @@ pub enum LlmContextUpdateMessage {
     // FULL CONTEXT
     AddMessage(Message),
     AddUserPrompt,
+    ToggleThoughts,
     ClearContext,
 
     // SYSTEM
@@ -69,7 +71,7 @@ pub enum LlmContextUpdateMessage {
     Stop,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Role {
     User,
     Model,
@@ -118,6 +120,7 @@ impl LlmContext {
             text_content,
             current_message: String::from(""),
             current_thought: String::from(""),
+            show_thoughts: false,
         }
     }
 
@@ -241,12 +244,14 @@ impl LlmContext {
                         }
                         LlmContextUpdateMessage::AddToCurrentThought(thought) => {
                             self.current_thought.push_str(&thought);
-                            let mut styled_thought = StyledString::new();
-                            styled_thought.append_styled(
-                                &thought,
-                                Style::from(Color::Dark(cursive::theme::BaseColor::Green)),
-                            );
-                            self.text_content.append(styled_thought);
+                            if self.show_thoughts {
+                                let mut styled_thought = StyledString::new();
+                                styled_thought.append_styled(
+                                    &thought,
+                                    Style::from(Color::Dark(BaseColor::Green)),
+                                );
+                                self.text_content.append(styled_thought);
+                            }
                         }
                         LlmContextUpdateMessage::AddMessage(message) => {
                             self.conversation.push(message);
@@ -295,6 +300,52 @@ impl LlmContext {
                             let _ = sink.send(Box::new(move |s| {
                                 show_message(s, e);
                             }));
+                        }
+                        LlmContextUpdateMessage::ToggleThoughts => {
+                            self.text_content.set_content("");
+
+                            self.show_thoughts = !self.show_thoughts;
+                            if self.show_thoughts {
+                                let full_str = self
+                                    .conversation
+                                    .iter()
+                                    .filter(|message| message.role != Role::User)
+                                    .map(|message| {
+                                        let mut frag = StyledString::new();
+                                        if let Some(thought) = &message.thought {
+                                            frag.append_styled(
+                                                thought,
+                                                Style::from(Color::Dark(BaseColor::Green)),
+                                            );
+                                        };
+                                        frag.append(&message.content);
+                                        frag.append("\n");
+                                        frag
+                                    })
+                                    .collect::<StyledString>();
+
+                                self.text_content.set_content(full_str);
+
+                                let mut current_thought = StyledString::new();
+                                current_thought.append_styled(
+                                    &self.current_thought,
+                                    Style::from(Color::Dark(BaseColor::Green)),
+                                );
+                                self.text_content.append(current_thought);
+
+                                self.text_content.append(&self.current_message);
+                            } else {
+                                let full_str = self
+                                    .conversation
+                                    .iter()
+                                    .filter(|message| message.role != Role::User)
+                                    .map(|message| message.content.to_owned())
+                                    .collect::<Vec<String>>()
+                                    .join("\n");
+
+                                self.text_content.set_content(full_str);
+                                self.text_content.append(&self.current_message);
+                            };
                         }
                         LlmContextUpdateMessage::Stop => break,
                     }
