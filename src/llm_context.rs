@@ -7,6 +7,8 @@ use std::{
 
 use cursive::{
     CbSink,
+    theme::{Color, Style},
+    utils::markup::StyledString,
     view::Nameable,
     views::{DummyView, LinearLayout, NamedView, TextArea, TextContent, TextView},
 };
@@ -63,6 +65,7 @@ pub enum LlmContextUpdateMessage {
     ClearContext,
 
     // SYSTEM
+    Error(String),
     Stop,
 }
 
@@ -134,7 +137,6 @@ impl LlmContext {
                 if let Ok(msg) = self.update_rx.recv() {
                     match msg {
                         LlmContextUpdateMessage::CallApi => {
-                            let sink = self.sink.clone();
                             let update_tx = self.update_tx.clone();
 
                             let messages = self
@@ -144,7 +146,7 @@ impl LlmContext {
                                 .collect::<Vec<OutgoingMessage>>();
 
                             thread::spawn(move || {
-                                ollama::stream_res_to_llm_context(update_tx, sink, messages);
+                                ollama::stream_res_to_llm_context(update_tx, messages);
                             });
                         }
                         LlmContextUpdateMessage::UpdateLoadingState(loading_state) => {
@@ -214,8 +216,11 @@ impl LlmContext {
                             };
                         }
                         LlmContextUpdateMessage::CurrentMessageEnd(role) => {
-                            self.conversation
-                                .push(Message::new(role, self.current_message.clone()));
+                            self.conversation.push(Message::new(
+                                role,
+                                self.current_message.clone(),
+                                Some(self.current_thought.clone()),
+                            ));
                             self.current_message.clear();
                             self.current_thought.clear();
 
@@ -236,7 +241,12 @@ impl LlmContext {
                         }
                         LlmContextUpdateMessage::AddToCurrentThought(thought) => {
                             self.current_thought.push_str(&thought);
-                            self.text_content.append(thought);
+                            let mut styled_thought = StyledString::new();
+                            styled_thought.append_styled(
+                                &thought,
+                                Style::from(Color::Dark(cursive::theme::BaseColor::Green)),
+                            );
+                            self.text_content.append(styled_thought);
                         }
                         LlmContextUpdateMessage::AddMessage(message) => {
                             self.conversation.push(message);
@@ -273,11 +283,17 @@ impl LlmContext {
                                     },
                                 ) {
                                     let _ = update_tx.send(LlmContextUpdateMessage::AddMessage(
-                                        Message::new(Role::User, prompt),
+                                        Message::new(Role::User, prompt, None),
                                     ));
 
                                     let _ = update_tx.send(LlmContextUpdateMessage::CallApi);
+                                    let _ = update_tx.send(LlmContextUpdateMessage::ClearPrompt);
                                 };
+                            }));
+                        }
+                        LlmContextUpdateMessage::Error(e) => {
+                            let _ = sink.send(Box::new(move |s| {
+                                show_message(s, e);
                             }));
                         }
                         LlmContextUpdateMessage::Stop => break,
@@ -292,8 +308,12 @@ impl LlmContext {
 }
 
 impl Message {
-    pub fn new(role: Role, content: String) -> Self {
-        Self { role, content }
+    pub fn new(role: Role, content: String, thought: Option<String>) -> Self {
+        Self {
+            role,
+            content,
+            thought,
+        }
     }
 }
 
@@ -301,4 +321,5 @@ impl Message {
 pub struct Message {
     pub role: Role,
     pub content: String,
+    pub thought: Option<String>,
 }

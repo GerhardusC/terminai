@@ -1,18 +1,13 @@
 use anyhow::Result;
 use std::{collections::HashMap, io::Read, sync::mpsc::Sender};
 
-use cursive::CbSink;
 use reqwest::blocking::Response;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    llm_context::{LlmContextUpdateMessage, LoadingState, Message, Role},
-    utils::show_message,
-};
+use crate::llm_context::{LlmContextUpdateMessage, LoadingState, Message, Role};
 
 pub fn stream_res_to_llm_context(
     sender: Sender<LlmContextUpdateMessage>,
-    sink: CbSink,
     context: Vec<OutgoingMessage>,
 ) {
     let _ = sender.send(LlmContextUpdateMessage::UpdateLoadingState(
@@ -27,9 +22,7 @@ pub fn stream_res_to_llm_context(
         Ok(res) => res,
         Err(e) => {
             let e = e.to_string();
-            let _ = sink.send(Box::new(move |s| {
-                show_message(s, e);
-            }));
+            let _ = sender.send(LlmContextUpdateMessage::Error(e));
             let _ = sender.send(LlmContextUpdateMessage::UpdateLoadingState(
                 LoadingState::Ready,
             ));
@@ -54,11 +47,13 @@ pub fn stream_res_to_llm_context(
                     let _ = sender.send(LlmContextUpdateMessage::UpdateLoadingState(
                         LoadingState::Thinking,
                     ));
+                    continue;
                 } else if parsed.message.content == "</think>" {
                     thinking = false;
                     let _ = sender.send(LlmContextUpdateMessage::UpdateLoadingState(
                         LoadingState::Streaming,
                     ));
+                    continue;
                 };
 
                 if thinking {
@@ -74,12 +69,13 @@ pub fn stream_res_to_llm_context(
                 role = parsed.message.role.as_str().into();
             }
             Err(e) => {
-                let _ = sink.send(Box::new(move |s| {
-                    if e.is_eof() {
-                        return;
-                    }
-                    show_message(s, format!("Err: {}, Res: {:?}", e, res.clone()));
-                }));
+                if !e.is_eof() {
+                    let _ = sender.send(LlmContextUpdateMessage::Error(format!(
+                        "Err: {}, Res: {:?}",
+                        e,
+                        res.clone()
+                    )));
+                }
             }
         }
         buf.fill(0);

@@ -30,7 +30,6 @@ impl LlmPromptView {
             )
             .button("PROMPT", move |_| {
                 let _ = sender_p.send(LlmContextUpdateMessage::AddUserPrompt);
-                let _ = sender_p.send(LlmContextUpdateMessage::ClearPrompt);
             })
             .button("CLEAR PROMPT", move |_| {
                 let _ = sender_clear_prompt.send(LlmContextUpdateMessage::ClearPrompt);
